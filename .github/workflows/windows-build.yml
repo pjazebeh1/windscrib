@@ -23,21 +23,25 @@ jobs:
       PYTHONIOENCODING: utf-8
 
     steps:
+      # 1. دریافت سورس پروژه
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # 2. نصب Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # 3. نصب Go
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.23"
 
+      # 4. بررسی ابزارهای موردنیاز
       - name: Verify build tools
         shell: pwsh
         run: |
@@ -47,21 +51,62 @@ jobs:
           ninja --version
           go version
 
+      # 5. نصب وابستگی‌های Python
       - name: Install Python requirements
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r tools/requirements.txt
 
-      - name: Install Windscribe vcpkg registry
+      # 6. دریافت مخزن اختصاصی Windscribe برای vcpkg
+      - name: Checkout Windscribe vcpkg registry
         shell: pwsh
         run: |
-          git clone https://github.com/Windscribe/ws-vcpkg-registry.git ws-vcpkg-registry
-          cmd /c "ws-vcpkg-registry\install-vcpkg\vcpkg_install.bat C:\vcpkg"
+          git clone --branch main --depth 1 https://github.com/Windscribe/ws-vcpkg-registry.git ws-vcpkg-registry
+
           if ($LASTEXITCODE -ne 0) {
-            throw "vcpkg installation failed"
+            throw "Failed to clone Windscribe vcpkg registry"
           }
 
+          if (-not (Test-Path "ws-vcpkg-registry/install-vcpkg/vcpkg_install.bat")) {
+            throw "vcpkg_install.bat was not found"
+          }
+
+      # 7. نصب واقعی vcpkg
+      - name: Install and verify vcpkg
+        shell: pwsh
+        run: |
+          $installer = Join-Path $PWD "ws-vcpkg-registry\install-vcpkg\vcpkg_install.bat"
+
+          Write-Host "Installing Windscribe vcpkg..."
+          Write-Host "Installer: $installer"
+          Write-Host "Target: $env:VCPKG_ROOT"
+
+          & $installer "$env:VCPKG_ROOT"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windscribe vcpkg installer failed with exit code $LASTEXITCODE"
+          }
+
+          $toolchain = Join-Path $env:VCPKG_ROOT "scripts\buildsystems\vcpkg.cmake"
+          $vcpkgExe = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
+
+          if (-not (Test-Path $toolchain)) {
+            throw "vcpkg toolchain file is missing: $toolchain"
+          }
+
+          if (-not (Test-Path $vcpkgExe)) {
+            throw "vcpkg.exe is missing: $vcpkgExe"
+          }
+
+          Write-Host "vcpkg installation verified."
+          & $vcpkgExe version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "vcpkg version check failed"
+          }
+
+      # 8. نصب LLVM MinGW برای WSTunnel
       - name: Setup LLVM MinGW
         shell: pwsh
         run: |
@@ -76,7 +121,10 @@ jobs:
             throw "Could not find LLVM MinGW msvcrt x86_64 release"
           }
 
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile llvm-mingw.zip
+          Invoke-WebRequest `
+            -Uri $asset.browser_download_url `
+            -OutFile llvm-mingw.zip
+
           Expand-Archive llvm-mingw.zip -DestinationPath C:\llvm-mingw-package
 
           $folder = Get-ChildItem C:\llvm-mingw-package -Directory |
@@ -86,24 +134,66 @@ jobs:
             throw "LLVM MinGW extraction failed"
           }
 
-          "LLVM_MINGW_ROOT=$($folder.FullName)" >> $env:GITHUB_ENV
+          $llvmRoot = $folder.FullName
+          "LLVM_MINGW_ROOT=$llvmRoot" >> $env:GITHUB_ENV
 
+          Write-Host "LLVM_MINGW_ROOT=$llvmRoot"
+
+      # 9. نصب OpenVPN DCO
       - name: Install OpenVPN DCO
-        shell: cmd
-        run: python tools/deps/install_openvpn_dco.py
+        shell: pwsh
+        run: |
+          python tools/deps/install_openvpn_dco.py
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "OpenVPN DCO installation failed"
+          }
+
+      # 10. نصب Wintun
       - name: Install Wintun
-        shell: cmd
-        run: python tools/deps/install_wintun.py
+        shell: pwsh
+        run: |
+          python tools/deps/install_wintun.py
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "Wintun installation failed"
+          }
+
+      # 11. نصب WSTunnel
       - name: Install WSTunnel
-        shell: cmd
-        run: python tools/deps/install_wstunnel.py
+        shell: pwsh
+        run: |
+          python tools/deps/install_wstunnel.py
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "WSTunnel installation failed"
+          }
+
+      # 12. بررسی نهایی پیش از CMake
+      - name: Verify build environment
+        shell: pwsh
+        run: |
+          $toolchain = "$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+          if (-not (Test-Path $toolchain)) {
+            throw "CMake cannot find vcpkg toolchain: $toolchain"
+          }
+
+          if (-not $env:LLVM_MINGW_ROOT) {
+            throw "LLVM_MINGW_ROOT is not configured"
+          }
+
+          Write-Host "VCPKG_ROOT=$env:VCPKG_ROOT"
+          Write-Host "LLVM_MINGW_ROOT=$env:LLVM_MINGW_ROOT"
+          Write-Host "All prerequisites are ready."
+
+      # 13. ساخت Windscribe
       - name: Build Windscribe
         shell: cmd
-        run: tools\build_all.bat --dev-mode
+        run: |
+          tools\build_all.bat --dev-mode
 
+      # 14. ذخیره خروجی بیلد
       - name: Upload Windows build
         if: always()
         uses: actions/upload-artifact@v4
