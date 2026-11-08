@@ -1,3 +1,4 @@
+
 cmake_minimum_required(VERSION 3.23)
 
 project(gui)
@@ -36,12 +37,17 @@ set(WS_TS_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/translations/ws_desktop_uk.ts
     ${CMAKE_CURRENT_SOURCE_DIR}/translations/ws_desktop_vi.ts
     ${CMAKE_CURRENT_SOURCE_DIR}/translations/ws_desktop_zh-CN.ts
-    ${CMAKE_CURRENT_SOURCE_DIR}/translations/ws_desktop_zh-TW.ts)
+    ${CMAKE_CURRENT_SOURCE_DIR}/translations/ws_desktop_zh-TW.ts
+)
 
-# Using the -extensions flag to skip processing the .ui files in the test projects.  Otherwise, the
-# strings in said ui files will be added to the .ts output files.
+# Using the -extensions flag to skip processing the .ui files in the test projects.
 if (UPDATE_TRANSLATIONS)
-    qt6_create_translation(WS_QM_FILES ${CMAKE_CURRENT_SOURCE_DIR}/../.. ${WS_TS_FILES} OPTIONS -extensions cpp,h -locations none)
+    qt6_create_translation(
+        WS_QM_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/../..
+        ${WS_TS_FILES}
+        OPTIONS -extensions cpp,h -locations none
+    )
 endif()
 
 set(PROJECT_SOURCES
@@ -80,29 +86,43 @@ set(PROJECT_SOURCES
 
 if (APPLE)
     list(APPEND PROJECT_SOURCES windscribe_mac.qrc)
-endif (APPLE)
+endif()
 
 add_library(gui STATIC ${PROJECT_SOURCES})
 
-target_sources(${WS_APP_TARGET} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp)
-target_include_directories(${WS_APP_TARGET} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-qt_add_resources(gui "translations"
-    PREFIX
-        "/translations"
-    BASE
-        ${CMAKE_CURRENT_BINARY_DIR}
-    FILES
-        ${WS_QM_FILES}
+target_sources(${WS_APP_TARGET} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
 )
 
-target_link_libraries(gui PRIVATE Qt6::Core Qt6::Network Qt6::Widgets Qt6::Svg wsnet::wsnet spdlog::spdlog Boost::serialization)
+target_include_directories(${WS_APP_TARGET} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+qt_add_resources(gui "translations"
+    PREFIX "/translations"
+    BASE ${CMAKE_CURRENT_BINARY_DIR}
+    FILES ${WS_QM_FILES}
+)
+
+target_link_libraries(gui PRIVATE
+    Qt6::Core
+    Qt6::Network
+    Qt6::Widgets
+    Qt6::Svg
+    wsnet::wsnet
+    spdlog::spdlog
+    Boost::serialization
+)
 
 if(WIN32)
-    target_compile_definitions(gui PRIVATE CMAKE_LIBRARY_LIBRARY WIN32_LEAN_AND_MEAN PIO_APC_ROUTINE_DEFINED)
+    target_compile_definitions(gui PRIVATE
+        CMAKE_LIBRARY_LIBRARY
+        WIN32_LEAN_AND_MEAN
+        PIO_APC_ROUTINE_DEFINED
+    )
 endif()
 
-if (UNIX AND (NOT APPLE))
+if(UNIX AND NOT APPLE)
     find_package(Qt6 REQUIRED COMPONENTS DBus)
     target_link_libraries(gui PRIVATE Qt6::DBus)
 endif()
@@ -125,6 +145,10 @@ add_subdirectory(generalmessage)
 add_subdirectory(graphicresources)
 add_subdirectory(locations)
 add_subdirectory(locationswindow)
+
+# --- Server connection testing window ---
+add_subdirectory(serverstest)
+
 add_subdirectory(log)
 add_subdirectory(loginwindow)
 add_subdirectory(newsfeedwindow)
