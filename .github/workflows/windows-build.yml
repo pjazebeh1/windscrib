@@ -1,0 +1,115 @@
+
+name: Windscribe Windows Build
+
+on:
+  push:
+    branches:
+      - master
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windscribe for Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    env:
+      VCPKG_ROOT: C:\vcpkg
+      RUNNING_CI: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Verify build tools
+        shell: pwsh
+        run: |
+          python --version
+          git --version
+          cmake --version
+          ninja --version
+          go version
+
+      - name: Install Python requirements
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r tools/requirements.txt
+
+      - name: Install Windscribe vcpkg registry
+        shell: pwsh
+        run: |
+          git clone https://github.com/Windscribe/ws-vcpkg-registry.git ws-vcpkg-registry
+          cmd /c "ws-vcpkg-registry\install-vcpkg\vcpkg_install.bat C:\vcpkg"
+          if ($LASTEXITCODE -ne 0) {
+            throw "vcpkg installation failed"
+          }
+
+      - name: Setup LLVM MinGW
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest"
+
+          $asset = $release.assets |
+            Where-Object { $_.name -match "msvcrt.*x86_64.*\.zip$" } |
+            Select-Object -First 1
+
+          if (-not $asset) {
+            throw "Could not find LLVM MinGW msvcrt x86_64 release"
+          }
+
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile llvm-mingw.zip
+          Expand-Archive llvm-mingw.zip -DestinationPath C:\llvm-mingw-package
+
+          $folder = Get-ChildItem C:\llvm-mingw-package -Directory |
+            Select-Object -First 1
+
+          if (-not $folder) {
+            throw "LLVM MinGW extraction failed"
+          }
+
+          "LLVM_MINGW_ROOT=$($folder.FullName)" >> $env:GITHUB_ENV
+
+      - name: Install OpenVPN DCO
+        shell: cmd
+        run: python tools/deps/install_openvpn_dco.py
+
+      - name: Install Wintun
+        shell: cmd
+        run: python tools/deps/install_wintun.py
+
+      - name: Install WSTunnel
+        shell: cmd
+        run: python tools/deps/install_wstunnel.py
+
+      - name: Build Windscribe
+        shell: cmd
+        run: tools\build_all.bat --dev-mode
+
+      - name: Upload Windows build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windscribe-Windows-Build
+          path: |
+            build-exe/**
+          if-no-files-found: warn
+          retention-days: 14
