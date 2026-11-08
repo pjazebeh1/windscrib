@@ -1,7 +1,9 @@
+
 #include "trayicon.h"
 
 #include <QDesktopServices>
 #include <QElapsedTimer>
+#include <QPointer>
 #include <QThread>
 #include <QTimer>
 
@@ -9,6 +11,7 @@
 #include "languagecontroller.h"
 #include "locations/model/locationsmodel.h"
 #include "mainwindow.h"
+#include "serverstest/serverstestwindow.h"
 #include "themecontroller.h"
 #include "utils/hardcodedsettings.h"
 #include "widgetutils/widgetutils.h"
@@ -30,25 +33,23 @@ TrayIcon::TrayIcon(QObject *parent, Backend *backend, Preferences *preferences)
     : QObject(parent), backend_(backend), preferences_(preferences), trayIconColorWhite_(false), isLoggedIn_(false),
       lastScreenName_(""), trayIconPositionAvailable_(false), currentIconType_(AppIconType::DISCONNECTED)
 {
-    // Initialize "fallback" tray icon geometry.
+    // Initialize fallback tray icon geometry.
     if (qApp->screens().size() == 0 || qApp->screens().at(0) == NULL) {
         qCCritical(LOG_BASIC) << "No screen for fallback tray icon init";
     } else {
         const QScreen *screen = qApp->screens().at(0);
         const QRect desktopAvailableRc = screen->availableGeometry();
-        savedTrayIconRect_.setTopLeft(QPoint(desktopAvailableRc.right() - 800, 0));  // Rough estimate
+        savedTrayIconRect_.setTopLeft(QPoint(desktopAvailableRc.right() - 800, 0));
         savedTrayIconRect_.setSize(QSize(22, 22));
     }
 
     updateTrayIconColor();
 
-    // Create tray menu items here, because it seems like Qt on Linux does not even trigger aboutToShow()
-    // if the menu is empty, and since aboutToShow() is never called, we never populate the menu, ad nauseum.
-    // Calling createTrayMenuItems() once here makes everything work.
+    // Create tray menu items here because Qt on Linux may not trigger
+    // aboutToShow() when the menu is empty.
     createMenuItems();
 
 #ifdef Q_OS_MACOS
-    // Qt reads clickCount from a non-mouse event when a native tray menu starts tracking on macOS 27.
     WidgetUtils_mac::disableQtTrayMenuTrackingCallback();
     if (!preferences_->isDockedToTray()) {
         trayIcon_.setContextMenu(&trayMenu_);
@@ -56,16 +57,27 @@ TrayIcon::TrayIcon(QObject *parent, Backend *backend, Preferences *preferences)
 #else
     trayIcon_.setContextMenu(&trayMenu_);
 #endif
-    connect(&trayMenu_, &QMenu::aboutToShow, this, &TrayIcon::onMenuAboutToShow);
-    connect(&trayMenu_, &QMenu::aboutToHide, this, &TrayIcon::onMenuAboutToHide);
-    connect(&trayIcon_, &QSystemTrayIcon::activated, this, &TrayIcon::onTrayActivated);
+
+    connect(&trayMenu_, &QMenu::aboutToShow,
+            this, &TrayIcon::onMenuAboutToShow);
+
+    connect(&trayMenu_, &QMenu::aboutToHide,
+            this, &TrayIcon::onMenuAboutToHide);
+
+    connect(&trayIcon_, &QSystemTrayIcon::activated,
+            this, &TrayIcon::onTrayActivated);
 
 #if defined(Q_OS_LINUX) || defined(Q_OS_WIN)
-    connect(preferences_, &Preferences::trayIconColorChanged, this, &TrayIcon::updateTrayIconColor);
+    connect(preferences_, &Preferences::trayIconColorChanged,
+            this, &TrayIcon::updateTrayIconColor);
 #endif
-    connect(&ThemeController::instance(), &ThemeController::osThemeChanged, this, &TrayIcon::updateTrayIconColor);
+
+    connect(&ThemeController::instance(), &ThemeController::osThemeChanged,
+            this, &TrayIcon::updateTrayIconColor);
+
 #ifdef Q_OS_MACOS
-    connect(preferences_, &Preferences::isDockedToTrayChanged, this, &TrayIcon::onDockedModeChanged);
+    connect(preferences_, &Preferences::isDockedToTrayChanged,
+            this, &TrayIcon::onDockedModeChanged);
 #endif
 
     trayIcon_.show();
@@ -74,10 +86,15 @@ TrayIcon::TrayIcon(QObject *parent, Backend *backend, Preferences *preferences)
 #ifdef Q_OS_MACOS
     if (preferences_->isDockedToTray()) {
         initialTrayIconRect_ = trayIcon_.geometry();
+
         qCInfo(LOG_BASIC) << "TrayIcon::TrayIcon - starting monitor timer";
+
         elapsedTimer_.start();
         monitorTimer_.setInterval(100);
-        connect(&monitorTimer_, &QTimer::timeout, this, &TrayIcon::checkTrayIconPosition);
+
+        connect(&monitorTimer_, &QTimer::timeout,
+                this, &TrayIcon::checkTrayIconPosition);
+
         monitorTimer_.start();
     } else {
         trayIconPositionAvailable_ = true;
@@ -87,7 +104,8 @@ TrayIcon::TrayIcon(QObject *parent, Backend *backend, Preferences *preferences)
 
 TrayIcon::~TrayIcon()
 {
-    // Qt releases a menu item's native counterpart only when its action is removed from a live menu.
+    // Qt releases a menu item's native counterpart only when
+    // the action is removed from a live menu.
     clearMenu();
 }
 
@@ -113,28 +131,36 @@ void TrayIcon::updateTooltip(const QString &tooltip)
 void TrayIcon::updateIconType(AppIconType type)
 {
     currentIconType_ = type;
+
     const QIcon *icon = nullptr;
+
     switch (type) {
     case AppIconType::DISCONNECTED:
         icon = IconManager::instance().getDisconnectedTrayIcon(trayIconColorWhite_);
         break;
+
     case AppIconType::CONNECTING:
         icon = IconManager::instance().getConnectingTrayIcon(trayIconColorWhite_);
         break;
+
     case AppIconType::CONNECTED:
         icon = IconManager::instance().getConnectedTrayIcon(trayIconColorWhite_);
         break;
+
     case AppIconType::DISCONNECTED_WITH_ERROR:
         icon = IconManager::instance().getErrorTrayIcon(trayIconColorWhite_);
         break;
+
     default:
         break;
     }
 
     if (icon) {
         trayIcon_.setIcon(*icon);
+
 #if defined(Q_OS_WIN)
         const QPixmap pm = icon->pixmap(QSize(16, 16) * G_SCALE);
+
         if (!pm.isNull()) {
             QTimer::singleShot(1, [pm]() {
                 WidgetUtils_win::updateSystemTrayIcon(pm, QString());
@@ -158,8 +184,9 @@ void TrayIcon::onMenuAboutToShow()
 {
     clearMenu();
     createMenuItems();
+
 #if defined(Q_OS_MACOS)
-    // The status item swallows the click once a native menu is attached, so Qt never reports the activation.
+    // The status item swallows the click once a native menu is attached.
     emit activated(QSystemTrayIcon::Trigger);
 #endif
 }
@@ -184,69 +211,166 @@ void TrayIcon::createMenuItems()
         } else {
             trayMenu_.addAction(tr("Disconnect"), this, &TrayIcon::disconnectClick);
         }
+
         trayMenu_.addSeparator();
 
 #ifndef Q_OS_LINUX
 
 #ifdef USE_LOCATIONS_TRAY_MENU_NATIVE
         if (backend_->locationsModelManager()->sortedLocationsProxyModel()->rowCount() > 0) {
-            QSharedPointer<LocationsTrayMenuNative> menu(new LocationsTrayMenuNative(&trayMenu_, backend_->locationsModelManager()->sortedLocationsProxyModel()), &QObject::deleteLater);
+            QSharedPointer<LocationsTrayMenuNative> menu(
+                new LocationsTrayMenuNative(
+                    &trayMenu_,
+                    backend_->locationsModelManager()->sortedLocationsProxyModel()
+                ),
+                &QObject::deleteLater
+            );
+
             menu->setTitle(tr("Locations"));
             trayMenu_.addMenu(menu.get());
-            connect(menu.get(), &LocationsTrayMenuNative::locationSelected, this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
+            connect(menu.get(), &LocationsTrayMenuNative::locationSelected,
+                    this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
             locationsMenu_.append(menu);
         }
+
         if (backend_->locationsModelManager()->favoriteCitiesProxyModel()->rowCount() > 0) {
-            QSharedPointer<LocationsTrayMenuNative> menu(new LocationsTrayMenuNative(&trayMenu_, backend_->locationsModelManager()->favoriteCitiesProxyModel()), &QObject::deleteLater);
+            QSharedPointer<LocationsTrayMenuNative> menu(
+                new LocationsTrayMenuNative(
+                    &trayMenu_,
+                    backend_->locationsModelManager()->favoriteCitiesProxyModel()
+                ),
+                &QObject::deleteLater
+            );
+
             menu->setTitle(tr("Favourites"));
             trayMenu_.addMenu(menu.get());
-            connect(menu.get(), &LocationsTrayMenuNative::locationSelected, this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
+            connect(menu.get(), &LocationsTrayMenuNative::locationSelected,
+                    this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
             locationsMenu_.append(menu);
         }
+
         if (backend_->locationsModelManager()->staticIpsProxyModel()->rowCount() > 0) {
-            QSharedPointer<LocationsTrayMenuNative> menu(new LocationsTrayMenuNative(&trayMenu_, backend_->locationsModelManager()->staticIpsProxyModel()), &QObject::deleteLater);
+            QSharedPointer<LocationsTrayMenuNative> menu(
+                new LocationsTrayMenuNative(
+                    &trayMenu_,
+                    backend_->locationsModelManager()->staticIpsProxyModel()
+                ),
+                &QObject::deleteLater
+            );
+
             menu->setTitle(tr("Static IPs"));
             trayMenu_.addMenu(menu.get());
-            connect(menu.get(), &LocationsTrayMenuNative::locationSelected, this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
+            connect(menu.get(), &LocationsTrayMenuNative::locationSelected,
+                    this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
             locationsMenu_.append(menu);
         }
+
         if (backend_->locationsModelManager()->customConfigsProxyModel()->rowCount() > 0) {
-            QSharedPointer<LocationsTrayMenuNative> menu(new LocationsTrayMenuNative(&trayMenu_, backend_->locationsModelManager()->customConfigsProxyModel()), &QObject::deleteLater);
+            QSharedPointer<LocationsTrayMenuNative> menu(
+                new LocationsTrayMenuNative(
+                    &trayMenu_,
+                    backend_->locationsModelManager()->customConfigsProxyModel()
+                ),
+                &QObject::deleteLater
+            );
+
             menu->setTitle(tr("Custom configs"));
             trayMenu_.addMenu(menu.get());
-            connect(menu.get(), &LocationsTrayMenuNative::locationSelected, this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
+            connect(menu.get(), &LocationsTrayMenuNative::locationSelected,
+                    this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
             locationsMenu_.append(menu);
         }
+
 #else
         if (backend_->locationsModelManager()->sortedLocationsProxyModel()->rowCount() > 0) {
-            QSharedPointer<LocationsTrayMenu> menu(new LocationsTrayMenu(&trayMenu_, backend_->locationsModelManager()->sortedLocationsProxyModel(), trayMenu_.font(), trayIcon_.geometry()), &QObject::deleteLater);
+            QSharedPointer<LocationsTrayMenu> menu(
+                new LocationsTrayMenu(
+                    &trayMenu_,
+                    backend_->locationsModelManager()->sortedLocationsProxyModel(),
+                    trayMenu_.font(),
+                    trayIcon_.geometry()
+                ),
+                &QObject::deleteLater
+            );
+
             menu->setTitle(tr("Locations"));
             trayMenu_.addMenu(menu.get());
-            connect(menu.get(), &LocationsTrayMenu::locationSelected, this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
+            connect(menu.get(), &LocationsTrayMenu::locationSelected,
+                    this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
             locationsMenu_.append(menu);
         }
+
         if (backend_->locationsModelManager()->favoriteCitiesProxyModel()->rowCount() > 0) {
-            QSharedPointer<LocationsTrayMenu> menu(new LocationsTrayMenu(&trayMenu_, backend_->locationsModelManager()->favoriteCitiesProxyModel(), trayMenu_.font(), trayIcon_.geometry()), &QObject::deleteLater);
+            QSharedPointer<LocationsTrayMenu> menu(
+                new LocationsTrayMenu(
+                    &trayMenu_,
+                    backend_->locationsModelManager()->favoriteCitiesProxyModel(),
+                    trayMenu_.font(),
+                    trayIcon_.geometry()
+                ),
+                &QObject::deleteLater
+            );
+
             menu->setTitle(tr("Favourites"));
             trayMenu_.addMenu(menu.get());
-            connect(menu.get(), &LocationsTrayMenu::locationSelected, this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
+            connect(menu.get(), &LocationsTrayMenu::locationSelected,
+                    this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
             locationsMenu_.append(menu);
         }
+
         if (backend_->locationsModelManager()->staticIpsProxyModel()->rowCount() > 0) {
-            QSharedPointer<LocationsTrayMenu> menu(new LocationsTrayMenu(&trayMenu_, backend_->locationsModelManager()->staticIpsProxyModel(), trayMenu_.font(), trayIcon_.geometry()), &QObject::deleteLater);
+            QSharedPointer<LocationsTrayMenu> menu(
+                new LocationsTrayMenu(
+                    &trayMenu_,
+                    backend_->locationsModelManager()->staticIpsProxyModel(),
+                    trayMenu_.font(),
+                    trayIcon_.geometry()
+                ),
+                &QObject::deleteLater
+            );
+
             menu->setTitle(tr("Static IPs"));
             trayMenu_.addMenu(menu.get());
-            connect(menu.get(), &LocationsTrayMenu::locationSelected, this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
+            connect(menu.get(), &LocationsTrayMenu::locationSelected,
+                    this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
             locationsMenu_.append(menu);
         }
+
         if (backend_->locationsModelManager()->customConfigsProxyModel()->rowCount() > 0) {
-            QSharedPointer<LocationsTrayMenu> menu(new LocationsTrayMenu(&trayMenu_, backend_->locationsModelManager()->customConfigsProxyModel(), trayMenu_.font(), trayIcon_.geometry()), &QObject::deleteLater);
+            QSharedPointer<LocationsTrayMenu> menu(
+                new LocationsTrayMenu(
+                    &trayMenu_,
+                    backend_->locationsModelManager()->customConfigsProxyModel(),
+                    trayMenu_.font(),
+                    trayIcon_.geometry()
+                ),
+                &QObject::deleteLater
+            );
+
             menu->setTitle(tr("Custom configs"));
             trayMenu_.addMenu(menu.get());
-            connect(menu.get(), &LocationsTrayMenu::locationSelected, this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
+            connect(menu.get(), &LocationsTrayMenu::locationSelected,
+                    this, &TrayIcon::onLocationsTrayMenuLocationSelected);
+
             locationsMenu_.append(menu);
         }
 #endif
+
         trayMenu_.addSeparator();
 #endif
     }
@@ -254,6 +378,25 @@ void TrayIcon::createMenuItems()
 #if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
     trayMenu_.addAction(tr("Show app"), this, &TrayIcon::showClick);
 #endif
+
+    // Server connection testing window.
+    trayMenu_.addAction(
+        tr("Server Connection Test"),
+        this,
+        []() {
+            static QPointer<ServersTestWindow> testWindow;
+
+            if (!testWindow) {
+                testWindow = new ServersTestWindow();
+                testWindow->setAttribute(Qt::WA_DeleteOnClose);
+            }
+
+            testWindow->show();
+            testWindow->raise();
+            testWindow->activateWindow();
+        }
+    );
+
     trayMenu_.addAction(tr("Preferences"), this, &TrayIcon::preferencesClick);
     trayMenu_.addSeparator();
     trayMenu_.addAction(tr("Help"), this, &TrayIcon::helpMeClick);
@@ -263,22 +406,26 @@ void TrayIcon::createMenuItems()
 void TrayIcon::clearMenu()
 {
     trayMenu_.clear();
+
 #ifndef Q_OS_LINUX
     for (const auto &menu : locationsMenu_) {
         clearMenuTree(menu.get());
     }
+
     locationsMenu_.clear();
 #endif
 }
 
 void TrayIcon::clearMenuTree(QMenu *menu)
 {
-    // Qt frees a menu item's native counterpart (and its icon) only when the action is removed from a live menu;
-    // deleting a QMenu outright leaks them all. Empty every submenu bottom-up before the QMenus are deleted.
-    const QList<QMenu *> submenus = menu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly);
+    // Qt frees a menu item's native counterpart only when removed from a live menu.
+    const QList<QMenu *> submenus =
+        menu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly);
+
     for (QMenu *submenu : submenus) {
         clearMenuTree(submenu);
     }
+
     menu->clear();
 }
 
@@ -286,6 +433,7 @@ void TrayIcon::updateTrayIconColor()
 {
 #if defined(Q_OS_LINUX) || defined(Q_OS_WIN)
     const auto trayIconColor = preferences_->trayIconColor();
+
     if (trayIconColor == TRAY_ICON_COLOR::TRAY_ICON_COLOR_WHITE) {
         trayIconColorWhite_ = true;
     } else if (trayIconColor == TRAY_ICON_COLOR::TRAY_ICON_COLOR_BLACK) {
@@ -294,9 +442,11 @@ void TrayIcon::updateTrayIconColor()
         // TRAY_ICON_COLOR_OS_THEME
         trayIconColorWhite_ = ThemeController::instance().isOsDarkTheme();
     }
+
 #elif defined(Q_OS_MACOS)
     trayIconColorWhite_ = true;
 #endif
+
     updateIconType(currentIconType_);
 }
 
@@ -308,29 +458,45 @@ void TrayIcon::showMessage(const QString &title, const QString &message)
     }
 
 #if defined(Q_OS_LINUX)
-    QDBusInterface dbus("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
-                        "org.freedesktop.Notifications", QDBusConnection::sessionBus());
+    QDBusInterface dbus(
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        QDBusConnection::sessionBus()
+    );
 
     if (!dbus.isValid()) {
-        qCWarning(LOG_BASIC) << "TrayIcon::showMessage - could not connect to the notification manager using dbus."
-                           << (dbus.lastError().isValid() ? dbus.lastError().message() : "");
+        qCWarning(LOG_BASIC)
+            << "TrayIcon::showMessage - could not connect to the notification manager using dbus."
+            << (dbus.lastError().isValid() ? dbus.lastError().message() : "");
+
         return;
     }
 
-    // Leaving these here as documentation, and in case we need to use them in the future.
     uint replacesId = 0;
     QStringList actions;
     QMap<QString, QVariant> hints;
 
-    // This will show the default 'information' icon.
     const char *appIcon = "";
 
-    QDBusReply<uint> reply = dbus.call("Notify", "Windscribe VPN", replacesId, appIcon,
-                                       title, message, actions, hints, 10000);
+    QDBusReply<uint> reply = dbus.call(
+        "Notify",
+        "Windscribe VPN",
+        replacesId,
+        appIcon,
+        title,
+        message,
+        actions,
+        hints,
+        10000
+    );
+
     if (!reply.isValid()) {
-        qCWarning(LOG_BASIC) << "TrayIcon::showMessage - could not display the message."
-                           << (dbus.lastError().isValid() ? dbus.lastError().message() : "");
+        qCWarning(LOG_BASIC)
+            << "TrayIcon::showMessage - could not display the message."
+            << (dbus.lastError().isValid() ? dbus.lastError().message() : "");
     }
+
 #else
     qCWarning(LOG_BASIC) << "QSystemTrayIcon reports the system tray is not available";
 #endif
@@ -342,40 +508,54 @@ QRect TrayIcon::trayIconRect()
     if (trayIcon_.isVisible()) {
         const QRect rc = trayIcon_.geometry();
 
-        // check for valid tray icon
         if (!rc.isValid()) {
             QRect lastGuess = bestGuessForTrayIconRectFromLastScreen(rc.topLeft());
-            if (lastGuess.isValid()) return lastGuess;
+
+            if (lastGuess.isValid()) {
+                return lastGuess;
+            }
+
             return savedTrayIconRect_;
         }
 
-        // check for valid screen
         QScreen *screen = QGuiApplication::screenAt(rc.center());
+
         if (!screen) {
             QRect bestGuess = trayIconRectForScreenContainingPt(rc.topLeft());
+
             if (bestGuess.isValid()) {
                 return bestGuess;
             }
+
             return savedTrayIconRect_;
         }
 
         QRect screenGeo = screen->geometry();
 
-        // valid screen and tray icon -- update the cache
-        systemTrayIconRelativeGeoScreenHistory_[screen->name()] = QRect(abs(rc.x() - screenGeo.x()), abs(rc.y() - screenGeo.y()), rc.width(), rc.height());
+        systemTrayIconRelativeGeoScreenHistory_[screen->name()] =
+            QRect(
+                abs(rc.x() - screenGeo.x()),
+                abs(rc.y() - screenGeo.y()),
+                rc.width(),
+                rc.height()
+            );
+
         lastScreenName_ = screen->name();
         savedTrayIconRect_ = rc;
+
         return savedTrayIconRect_;
     }
 
 #else
     if (trayIcon_.isVisible()) {
         QRect trayIconRect = trayIcon_.geometry();
+
         if (trayIconRect.isValid()) {
             savedTrayIconRect_ = trayIconRect;
         }
     }
 #endif
+
     return savedTrayIconRect_;
 }
 
@@ -383,9 +563,11 @@ QRect TrayIcon::trayIconRect()
 const QRect TrayIcon::bestGuessForTrayIconRectFromLastScreen(const QPoint &pt)
 {
     QRect lastScreenTrayRect = trayIconRectForLastScreen();
+
     if (lastScreenTrayRect.isValid()) {
         return lastScreenTrayRect;
     }
+
     return trayIconRectForScreenContainingPt(pt);
 }
 
@@ -393,53 +575,70 @@ const QRect TrayIcon::trayIconRectForLastScreen()
 {
     if (lastScreenName_ != "") {
         QRect rect = generateTrayIconRectFromHistory(lastScreenName_);
+
         if (rect.isValid()) {
             return rect;
         }
     }
-    return QRect(0,0,0,0); // invalid
+
+    return QRect(0, 0, 0, 0);
 }
 
 const QRect TrayIcon::trayIconRectForScreenContainingPt(const QPoint &pt)
 {
     QScreen *screen = WidgetUtils::slightlySaferScreenAt(pt);
+
     if (!screen) {
-        return QRect(0,0,0,0);
+        return QRect(0, 0, 0, 0);
     }
+
     return guessTrayIconLocationOnScreen(screen);
 }
 
 const QRect TrayIcon::generateTrayIconRectFromHistory(const QString &screenName)
 {
     if (systemTrayIconRelativeGeoScreenHistory_.contains(screenName)) {
-        // ensure is in current list
         QScreen *screen = WidgetUtils::screenByName(screenName);
 
         if (screen) {
             const QRect screenGeo = screen->geometry();
 
-            TrayIconRelativeGeometry &rect = systemTrayIconRelativeGeoScreenHistory_[lastScreenName_];
-            QRect newIconRect = QRect(screenGeo.x() + rect.x(),
-                                      screenGeo.y() + rect.y(),
-                                      rect.width(), rect.height());
+            TrayIconRelativeGeometry &rect =
+                systemTrayIconRelativeGeoScreenHistory_[lastScreenName_];
+
+            QRect newIconRect(
+                screenGeo.x() + rect.x(),
+                screenGeo.y() + rect.y(),
+                rect.width(),
+                rect.height()
+            );
+
             return newIconRect;
         }
-        return QRect(0,0,0,0);
+
+        return QRect(0, 0, 0, 0);
     }
-    return QRect(0,0,0,0);
+
+    return QRect(0, 0, 0, 0);
 }
 
 QRect TrayIcon::guessTrayIconLocationOnScreen(QScreen *screen)
 {
     const QRect screenGeo = screen->geometry();
-    // Use a default width estimate since we don't have WINDOW_WIDTH here
-    const int defaultIconWidth = savedTrayIconRect_.isValid() ? savedTrayIconRect_.width() : 22;
-    const int defaultIconHeight = savedTrayIconRect_.isValid() ? savedTrayIconRect_.height() : 22;
 
-    QRect newIconRect = QRect(screenGeo.right() - 200,  // Rough estimate
-                              screenGeo.top(),
-                              defaultIconWidth,
-                              defaultIconHeight);
+    const int defaultIconWidth =
+        savedTrayIconRect_.isValid() ? savedTrayIconRect_.width() : 22;
+
+    const int defaultIconHeight =
+        savedTrayIconRect_.isValid() ? savedTrayIconRect_.height() : 22;
+
+    QRect newIconRect(
+        screenGeo.right() - 200,
+        screenGeo.top(),
+        defaultIconWidth,
+        defaultIconHeight
+    );
+
     return newIconRect;
 }
 #endif
@@ -463,7 +662,11 @@ void TrayIcon::checkTrayIconPosition()
     if (!currentRect.isEmpty() && currentRect != initialTrayIconRect_) {
         trayIconPositionAvailable_ = true;
         monitorTimer_.stop();
-        qCInfo(LOG_BASIC) << "TrayIcon::checkTrayIconPosition - tray icon position available after" << elapsedTimer_.elapsed() << "ms";
+
+        qCInfo(LOG_BASIC)
+            << "TrayIcon::checkTrayIconPosition - tray icon position available after"
+            << elapsedTimer_.elapsed() << "ms";
+
         emit trayIconPositionAvailable();
         return;
     }
@@ -471,7 +674,10 @@ void TrayIcon::checkTrayIconPosition()
     if (elapsedTimer_.elapsed() >= 2000) {
         trayIconPositionAvailable_ = true;
         monitorTimer_.stop();
-        qCInfo(LOG_BASIC) << "TrayIcon::checkTrayIconPosition - using fallback after timeout";
+
+        qCInfo(LOG_BASIC)
+            << "TrayIcon::checkTrayIconPosition - using fallback after timeout";
+
         emit trayIconPositionAvailable();
     }
 }
