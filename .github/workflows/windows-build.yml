@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 360
 
     env:
-      VCPKG_ROOT: C:\vcpkg
+      VCPKG_ROOT: C:\windscribe-vcpkg
       RUNNING_CI: "1"
       PYTHONIOENCODING: utf-8
 
