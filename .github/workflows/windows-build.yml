@@ -1,4 +1,100 @@
 
+name: Windscribe Windows Build
+
+on:
+  push:
+    branches:
+      - master
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windscribe for Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    env:
+      VCPKG_ROOT: C:\windscribe-vcpkg
+      RUNNING_CI: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      # 1. دریافت سورس پروژه
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 2. نصب Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 3. نصب Go
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      # 4. بررسی ابزارهای موردنیاز
+      - name: Verify build tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          python --version
+          git --version
+          cmake --version
+          ninja --version
+          go version
+
+      # 5. نصب وابستگی‌های Python
+      - name: Install Python requirements
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          python -m pip install --upgrade pip
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pip upgrade failed"
+          }
+
+          python -m pip install -r tools/requirements.txt
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python requirements installation failed"
+          }
+
+      # 6. دریافت مخزن اختصاصی Windscribe
+      - name: Checkout Windscribe vcpkg registry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          git clone --branch main --depth 1 https://github.com/Windscribe/ws-vcpkg-registry.git ws-vcpkg-registry
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to clone Windscribe vcpkg registry"
+          }
+
+          $registry = Join-Path $PWD "ws-vcpkg-registry"
+
+          if (-not (Test-Path "$registry\install-vcpkg\patches")) {
+            throw "Windscribe patches folder was not found"
+          }
+
+          if (-not (Test-Path "$registry\triplets")) {
+            throw "Windscribe triplets folder was not found"
+          }
+
+          Write-Host "Windscribe registry downloaded successfully."
+
       # 7. نصب مستقیم vcpkg با نسخه اختصاصی Windscribe
       - name: Install and verify vcpkg
         shell: pwsh
@@ -17,29 +113,33 @@
 
           New-Item -ItemType Directory -Path $root -Force | Out-Null
 
-          # دریافت مستقیم مخزن اصلی
+          # دریافت مخزن اصلی vcpkg
           git -C $root init
+
           if ($LASTEXITCODE -ne 0) {
             throw "Git initialization failed"
           }
 
           git -C $root remote add origin https://github.com/microsoft/vcpkg.git
+
           if ($LASTEXITCODE -ne 0) {
             throw "Adding vcpkg remote failed"
           }
 
-          # دریافت Commit دقیق موردنیاز Windscribe
+          # دریافت نسخه دقیق موردنیاز Windscribe
           git -C $root fetch --depth 1 origin $commit
+
           if ($LASTEXITCODE -ne 0) {
             throw "Fetching required vcpkg commit failed"
           }
 
           git -C $root checkout --detach FETCH_HEAD
+
           if ($LASTEXITCODE -ne 0) {
             throw "Checking out required vcpkg commit failed"
           }
 
-          # اعمال Patch اختصاصی Windscribe
+          # اعمال Patchهای Windscribe
           $patch1 = Join-Path $registry "install-vcpkg\patches\vcpkg_configure_cmake.patch"
           $patch2 = Join-Path $registry "install-vcpkg\patches\ios_toolchain.patch"
 
@@ -49,12 +149,13 @@
             }
 
             git -C $root apply $patch
+
             if ($LASTEXITCODE -ne 0) {
               throw "Failed to apply patch: $patch"
             }
           }
 
-          # نصب فایل‌های اختصاصی Triplet
+          # کپی Tripletهای اختصاصی Windscribe
           $tripletSource = Join-Path $registry "triplets"
           $tripletTarget = Join-Path $root "triplets"
 
@@ -64,8 +165,15 @@
 
           New-Item -ItemType Directory -Path $tripletTarget -Force | Out-Null
 
-          Get-ChildItem $tripletSource -Filter "*.cmake" |
-            Copy-Item -Destination $tripletTarget -Force
+          $triplets = Get-ChildItem $tripletSource -Filter "*.cmake" -File
+
+          if ($triplets.Count -eq 0) {
+            throw "No Windscribe triplet files were found"
+          }
+
+          $triplets | Copy-Item -Destination $tripletTarget -Force
+
+          Write-Host "Copied $($triplets.Count) Windscribe triplet files."
 
           # ساخت vcpkg.exe
           $bootstrap = Join-Path $root "bootstrap-vcpkg.bat"
@@ -74,12 +182,15 @@
             throw "bootstrap-vcpkg.bat not found"
           }
 
-          cmd /c "`"$bootstrap`" -disableMetrics"
+          Write-Host "Building vcpkg..."
+
+          cmd.exe /d /c "`"$bootstrap`" -disableMetrics"
+
           if ($LASTEXITCODE -ne 0) {
             throw "vcpkg bootstrap failed"
           }
 
-          # بررسی نهایی
+          # بررسی فایل‌های موردنیاز
           $toolchain = Join-Path $root "scripts\buildsystems\vcpkg.cmake"
           $vcpkgExe = Join-Path $root "vcpkg.exe"
 
@@ -91,7 +202,12 @@
             throw "vcpkg.exe is missing"
           }
 
+          # بررسی نسخه
           $actualCommit = git -C $root rev-parse HEAD
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not verify vcpkg commit"
+          }
 
           if ($actualCommit.Trim() -ne $commit) {
             throw "Installed vcpkg commit does not match"
@@ -105,3 +221,125 @@
           if ($LASTEXITCODE -ne 0) {
             throw "vcpkg version verification failed"
           }
+
+      # 8. نصب LLVM MinGW برای WSTunnel
+      - name: Setup LLVM MinGW
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest"
+
+          $asset = $release.assets |
+            Where-Object { $_.name -match "msvcrt.*x86_64.*\.zip$" } |
+            Select-Object -First 1
+
+          if (-not $asset) {
+            throw "Could not find LLVM MinGW msvcrt x86_64 release"
+          }
+
+          Invoke-WebRequest `
+            -Uri $asset.browser_download_url `
+            -OutFile llvm-mingw.zip
+
+          if (-not (Test-Path "llvm-mingw.zip")) {
+            throw "LLVM MinGW download failed"
+          }
+
+          Expand-Archive llvm-mingw.zip -DestinationPath C:\llvm-mingw-package -Force
+
+          $folder = Get-ChildItem C:\llvm-mingw-package -Directory |
+            Select-Object -First 1
+
+          if (-not $folder) {
+            throw "LLVM MinGW extraction failed"
+          }
+
+          $llvmRoot = $folder.FullName
+
+          "LLVM_MINGW_ROOT=$llvmRoot" >> $env:GITHUB_ENV
+
+          Write-Host "LLVM_MINGW_ROOT=$llvmRoot"
+
+      # 9. نصب OpenVPN DCO
+      - name: Install OpenVPN DCO
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          python tools/deps/install_openvpn_dco.py
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "OpenVPN DCO installation failed"
+          }
+
+      # 10. نصب Wintun
+      - name: Install Wintun
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          python tools/deps/install_wintun.py
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Wintun installation failed"
+          }
+
+      # 11. نصب WSTunnel
+      - name: Install WSTunnel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          python tools/deps/install_wstunnel.py
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "WSTunnel installation failed"
+          }
+
+      # 12. بررسی نهایی محیط ساخت
+      - name: Verify build environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $toolchain = "$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+          $vcpkgExe = "$env:VCPKG_ROOT\vcpkg.exe"
+
+          if (-not (Test-Path $toolchain)) {
+            throw "CMake cannot find vcpkg toolchain: $toolchain"
+          }
+
+          if (-not (Test-Path $vcpkgExe)) {
+            throw "vcpkg.exe is missing"
+          }
+
+          if (-not $env:LLVM_MINGW_ROOT) {
+            throw "LLVM_MINGW_ROOT is not configured"
+          }
+
+          if (-not (Test-Path $env:LLVM_MINGW_ROOT)) {
+            throw "LLVM MinGW directory does not exist"
+          }
+
+          Write-Host "VCPKG_ROOT=$env:VCPKG_ROOT"
+          Write-Host "LLVM_MINGW_ROOT=$env:LLVM_MINGW_ROOT"
+          Write-Host "All prerequisites are ready."
+
+      # 13. ساخت Windscribe
+      - name: Build Windscribe
+        shell: cmd
+        run: |
+          tools\build_all.bat --dev-mode
+
+      # 14. ذخیره خروجی بیلد
+      - name: Upload Windows build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windscribe-Windows-Build
+          path: |
+            build-exe/**
+          if-no-files-found: warn
+          retention-days: 14
